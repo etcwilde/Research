@@ -19,7 +19,6 @@ import subprocess
 #  Regex  #
 ###########
 
-# commit_expr_pat = r'^commit ([0-9a-f]{40})'
 commit_line_expr_pat = r"^([0-9a-f]{40})\s"
 commit_expr = re.compile(commit_line_expr_pat)
 file_line_expr_pat = r"^(-|[0-9]*)\s+(-|[0-9]*)\s+(.*)"
@@ -129,16 +128,6 @@ def queryGit(repodir, gitargs=["log"]):
     return (decodeLine(line) for line in git_ret.stdout.split(b'\n'))
 
 
-async def getCommits(repodir):
-    """
-    Get a list of commits in the repository
-
-    :repodir: Repository directory
-    :returns: generator of commit hashes
-    """
-    return queryGit(repodir, ['log', '--no-merges', '--format=%H'])
-
-
 async def getCommitFiles(repodir, cid):
     """
     Get the list of files with information about the number of lines
@@ -201,38 +190,6 @@ def getRepoData(repodir):
     print("Getting repo data")
 
     return queryGit(repodir, args)
-
-
-# Collect the commit-level aggregate information
-def parseGitCommitData(lines):
-    items = []
-    commit = None
-    lines_added = 0
-    lines_removed = 0
-    files_touched = 0
-    date = None
-    for line in lines:
-        m = commit_expr.match(line)
-        if m:
-            if commit is not None:
-                items.append((commit, date, files_touched, lines_added, lines_removed))
-                # print(f"Cid {commit}: {date}, {files_touched}")
-                lines_added = 0
-                lines_removed = 0
-                files_touched = 0
-            commit = m.groups()[0]
-            date = datetime.strptime(line[41:].strip(), '%c %z')
-        elif line == '\n':
-            continue
-        else:
-            if commit:
-                m = file_line_expr.match(line)
-                if m:
-                    added, removed, _ = m.groups()
-                    lines_added += int(added) if added[0] != '-' else 0
-                    lines_removed += int(removed) if removed[0] != '-' else 0
-                    files_touched += 1
-    return items
 
 
 ##########
