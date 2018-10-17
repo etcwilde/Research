@@ -21,7 +21,7 @@ repository should be at the latest commit you want included. It will
 include everything that has been integrated back into the project.
 
 The output is a sqlite database containing two tables:
-
+```
 | Commits       |                |                             |
 |---------------+----------------+-----------------------------|
 | cid           | CHARACTER (40) | Commit hash                 |
@@ -31,8 +31,8 @@ The output is a sqlite database containing two tables:
 | lines_removed | INTEGER        | Number of lines removed     |
 |               |                |                             |
 | PRIMARY KEY   | cid            |                             |
-
-
+```
+```
 | Files       |                 |                                                      |
 |-------------+-----------------+------------------------------------------------------|
 | cid         | CHARACTER (40)  | Commit hash                                          |
@@ -41,3 +41,4 @@ The output is a sqlite database containing two tables:
 | removed     | INTEGER         | Number of lines removed from the file in this commit |
 |             |                 |                                                      |
 | PRIMARY KEY | (cid, filename) |                                                      |
+```
