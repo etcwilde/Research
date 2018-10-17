@@ -1,0 +1,1056 @@
+#+PROPERTY: header-args:sqlite :colnames yes
+#+TITLE: To merge or not to merge, and the consequences
+#+AUTHOR: Evan Wilde <etceterawilde@gmail.com>
+#+STARTUP: inlineimages
+
+* Introduction
+
+LLVM and Linux have vastly different merging behaviour.
+LLVM uses an SVN-style commit behaviour where things are pretty much committed directly to the master branch after going through code review.
+This is probably because the main LLVM repository is still on SVN.
+In contrast, the Linux repository uses merge commits quite heavily, matching the organization structure of Linux. Linus is the only author with merge access to the master branch of the mainline Linux repository. Under Linus are people who focus on large subsystems of the kernel, for example Andrew Morton merges all of the patches related to the memory management. You'll have another merge containing the changes to the networking subsystem. Inside of that is a merge for the wirless component which may contain a merge for mac80211 and bluetooth. Eventually you reach the commits, but by then things have been filtered down so you'll have a pretty good idea of what is being changed by a single commit.
+
+My aim in this is to look at the effect of the different merging strategies on the commits in the repositories, looking at the number of files modified per commit, and the number of lines changed. My guess is that commits in LLVM will make changes to more files, and that more lines will be edited per commit. This comes from the notion that each commit is pushed directly into the master branch, and therefore should probably be a complete, functioning patch. Conversely, commits made to side-branches of the kernel do not need to leave the kernel in an operating state, so long as the kernel is functioning by the time the changes in commit are integrated. This makes it possible to make small, incremental changes, leading up to something that works.
+
+ It is important to note that these numbers do not necessarily reflect how the engineers on these projects actually work, only the artifact that is left behind after they've cleaned up their workspace and pushed it out.
+
+#+BEGIN_QUOTE
+Archaeology is the search for fact, not truth.
+-- Indiana Jones
+#+END_QUOTE
+
+So, lets get to some repository archaeology. The data was collected on October 7, 2018, from the Linux and LLVM repositories.
+Commit 7876320f88802b22d4e2daf7eb027dd14175a0f8 is the top merge commit into Linux at the time of collection, and a2434c2657e24263fab58e864aea7fb0049daefd is the top of master in LLVM at the time of collection.
+The generated database contains a single table containing information about the commits.
+
+
+| Commits       |                |                             |
+|---------------+----------------+-----------------------------|
+| cid           | CHARACTER (40) | Commit hash                 |
+| created_at    | DATE           | When the commit was created |
+| files_touched | INTEGER        | Number of files modified    |
+| lines_added   | INTEGER        | Number of lines added       |
+| lines_removed | INTEGER        | Number of lines removed     |
+|               |                |                             |
+| PRIMARY KEY   | cid            |                             |
+
+The commits do not include merge commits, as I'm only interested in counting the changes that happen in non-merge commits.
+
+* Background
+
+How many commits are involved with each repository, and how many files?
+When comparing these numbers, it's important to remember that Linux is a closed (read that as single, i.e. you can put it in one box, not closed-source) project, living in a single repository. Conversely, LLVM contains the core compiler framework, backends, and optimizer, but the frontends (like Clang and Swiftc) live in separate repositories. These numbers are just the core LLVM repository and do not include anything from the frontends.
+
+#+NAME: Total Commits
+#+BEGIN_SRC sqlite :db ./linux.db
+attach 'llvm.db' as llvm;
+attach 'linux.db' as linux;
+
+SELECT 'linux' project, count(*) commits
+FROM linux.commits
+UNION
+SELECT 'llvm' project, count(*) commits
+FROM llvm.commits
+ORDER BY  count(*) DESC;
+#+END_SRC
+
+#+RESULTS: Total Commits
+| project | commits |
+|---------+---------|
+| linux   |  724890 |
+| llvm    |  170283 |
+
+The Linux repository contains only around 7 times more commits than LLVM.
+
+The first commit in the Linux repository contains all of the changes made to Linux up to that point, dropping all of the previous history. This results in one large commit being made on April 16, 2005. The first commit to LLVM was on the evening of June 6, 2001. Now, a clever eye might pick up on an issue here. Git wasn't written until 2005, and I'm pretty sure Chris Lattner doesn't own a time machine. The LLVM repository actually just imported all of the commits from the SVN repository. The git repository is just a mirror, LLVM is still primarily hosted on SVN, so it makes sense that the SVN history was kept. 
+
+I enjoy the commit log message for the initial commit to the LLVM git repository though.
+
+#+BEGIN_QUOTE
+commit 8d0afd3d32d1d67f9aa5df250a1d6955aa8f1ac9
+Author: CVS to SVN Conversion <nobody@llvm.org>
+Date:   Wed Jun 6 20:29:01 2001 +0000
+
+    New repository initialized by cvs2svn.
+
+    git-svn-id: https://llvm.org/svn/llvm-project/llvm/trunk@1 91177308-0d34-0410-b5e6-96231b3b80d8
+#+END_QUOTE
+
+This commit is the move from cvs to svn.
+This isn't the first time LLVM has tried different version control systems, and it might not be the last.
+
+How many files are in each project? I don't actually have this information in my database, so I'll just query that with `wc`.
+
+#+NAME: Number of files
+#+BEGIN_SRC sh
+find linux/ -type f | wc -l
+find llvm/ -type f | wc -l
+#+END_SRC
+
+#+RESULTS: Number of files
+| 61769 |
+| 33359 |
+
+So Linux has roughly twice the number of files.
+Just for fun, lets count the total number of lines in both projects.
+
+#+NAME: Number of lines
+#+BEGIN_SRC sh
+find linux/ -type f | xargs cat | wc -l
+find llvm/ -type f | xargs cat | wc -l
+#+END_SRC
+
+#+RESULTS: Number of lines
+| 41865049 |
+|  8738810 |
+
+Well. I can't say that was completely unexpected, but there are a lot of lines in both of these projects. This, of course, includes all of the lines in the documentation and tests as well.
+
+Finally, how many people are involved in these projects. This is a pretty rough estimate of the number of people that just uses the authors from the commits. Using '%aN' instead of '%an' will respect the mail mapping if one is available, which will merge the author names if people use multiple email addresses. Linux has a mailmap file, LLVM does not.
+
+#+NAME: Number of constributors
+#+BEGIN_SRC sh
+git -C linux/ log --format='%aN' | sort | uniq | wc -l
+git -C llvm/ log --format='%aN' | sort | uniq | wc -l
+#+END_SRC
+
+#+RESULTS: Number of constributors
+| 19007 |
+|   976 |
+
+Linux has quite a few more contributors. Given this, I'm actually pretty surprised that the number of lines in each project is so similar.
+On average, each author to Linux has written around 2200 lines, whereas, that number is closer to 9000 lines contributed per author. That's neat.
+This poses new questions about contributor retention and loyalty in the two projects, but that's a story for another time.
+
+* Effect of Merging on Files Modified
+
+Lets start with a picture to give us an idea of what we're working with.
+
+#+BEGIN_SRC R
+library(RSQLite)
+colorSchemeFill = c("#6ca1f7", "#f74747")
+colorSchemeBorder= c("#3364b2", "#b23333")
+linux_con <- dbConnect(drv=dbDriver('SQLite'), dbname='./linux.db')
+llvm_con <- dbConnect(drv=dbDriver('SQLite'), dbname='./llvm.db')
+
+svg("images/file_distribution.svg")
+query <- "
+SELECT cid,
+       files_touched
+FROM commits
+WHERE files_touched <> 0;
+"
+linux_data <- dbGetQuery(linux_con, query);
+llvm_data <- dbGetQuery(llvm_con, query)
+boxplot(linux_data$files_touched, llvm_data$files_touched,
+        col=colorSchemeFill,
+        names=list('Linux', 'LLVM'),
+        main="Distribution of Files Touched Per Commit",
+        outline=F)
+
+#+END_SRC
+
+#+RESULTS:
+
+#+CAPTION: Comparison of the number of files modified in commits between Linux and LLVM
+#+NAME: fig:file_distribution
+[[file:images/file_distribution.pdf]]
+
+Essentially, the median number of files modified per commit is the same at 1. The upper quartiles are where the two repositories deviate. The top 75% of the commits to LLVM include up to 3 files touched, where Linux has up to two, and the top 100% modify at most 6 files, compared to 3 files in Linux. This plot ignores the outliers.
+It seems pretty expected.
+
+#+BEGIN_SRC sqlite :db ./linux.db
+.load './libs/libsqlitefunctions.so'
+attach 'llvm.db' as llvm;
+attach 'linux.db' as linux;
+
+SELECT 'Linux' project,
+			 count(*),
+			 max(files_touched) max,
+			 median(files_touched) median,
+			 round(avg(files_touched), 3) avg,
+			 min(files_touched) min
+FROM linux.commits
+UNION
+SELECT 'LLVM' project,
+			 count(*),
+			 max(files_touched) max,
+			 median(files_touched) median,
+			 round(avg(files_touched), 3) avg,
+			 min(files_touched) min
+FROM llvm.commits;
+
+#+END_SRC
+
+#+RESULTS:
+| project | count(*) |   max | median |   avg | min |
+|---------+----------+-------+--------+-------+-----|
+| LLVM    |   170283 |  3931 |      1 | 3.377 |   0 |
+| Linux   |   724890 | 17291 |      1 | 2.401 |   0 |
+
+
+#+CAPTION: Number of files touched per commit over time in Linux and LLVM
+#+NAME: fig:file_distribution_over_time
+[[file:plots/file_distribution_over_time.pdf]]
+
+ LLVM is initially fairly stable until 2012, when the number of files modified increases. The median remains 1, but the ceiling of the third quartile jumps from two to three files. From 2013 to 2018, the median number of files changed per commit is 2, and in 2015, 2017, and 2018, the top of the third quartile includes four files modified per commit.
+
+#+BEGIN_SRC sqlite :db ./linux.db
+attach './linux.db' AS linux;
+attach './llvm.db' AS llvm;
+
+SELECT linux.files_touched 'Files Touched', linux.cnt 'Linux Count', llvm.cnt 'LLVM Count'
+FROM
+(SELECT files_touched, count(*) cnt
+FROM llvm.commits
+GROUP BY files_touched
+ORDER BY files_touched, count(*)
+LIMIT 15) llvm
+JOIN
+(SELECT files_touched, count(*) cnt
+FROM linux.commits
+GROUP BY files_touched
+ORDER BY files_touched, count(*)
+LIMIT 15) linux
+ON llvm.files_touched = linux.files_touched;
+#+END_SRC
+
+#+RESULTS:
+| Files Touched | Linux Count | LLVM Count |
+|---------------+-------------+------------|
+|             0 |          39 |        212 |
+|             1 |      463629 |      87211 |
+|             2 |      104924 |      36193 |
+|             3 |       58589 |      14616 |
+|             4 |       32650 |       8623 |
+|             5 |       18923 |       5275 |
+|             6 |       11515 |       3723 |
+|             7 |        7548 |       2595 |
+|             8 |        5196 |       1822 |
+|             9 |        3595 |       1477 |
+|            10 |        2750 |       1204 |
+|            11 |        2051 |        900 |
+|            12 |        1705 |        753 |
+|            13 |        1339 |        567 |
+|            14 |        1062 |        516 |
+
+** Linux
+
+#+BEGIN_SRC sqlite :db ./linux.db
+.load './libs/libsqlitefunctions.so'
+SELECT cast(strftime('%Y', created_at) as INTEGER) valYear, count(*), round(avg(files_touched), 3) mean, median(files_touched) med FROM commits WHERE valYear > 2004 AND valYear <= 2018 GROUP BY valYear;
+
+#+END_SRC
+
+#+RESULTS:
+| valYear | count(*) |  mean | med |
+|---------+----------+-------+-----|
+|    2005 |    15426 | 4.105 |   1 |
+|    2006 |    27628 | 2.983 |   1 |
+|    2007 |    32165 | 2.736 |   1 |
+|    2008 |    45992 | 2.711 |   1 |
+|    2009 |    48864 | 2.463 |   1 |
+|    2010 |    46530 | 2.568 |   1 |
+|    2011 |    52564 | 2.622 |   1 |
+|    2012 |    60305 | 2.448 |   1 |
+|    2013 |    65264 | 2.093 |   1 |
+|    2014 |    69818 | 2.066 |   1 |
+|    2015 |    70129 | 2.106 |   1 |
+|    2016 |    70801 | 2.165 |   1 |
+|    2017 |    74156 | 2.366 |   1 |
+|    2018 |    45212 | 2.192 |   1 |
+
+
+#+BEGIN_SRC sqlite :db ./linux.db
+.load './libs/libsqlitefunctions.so'
+
+SELECT commits.cid, commits.created_at, commits.files_touched, commits.lines_added, commits.lines_removed, commits.lines_added + commits.lines_removed churn, commits.lines_added - commits.lines_removed delta
+FROM commits
+ORDER BY commits.files_touched DESC
+LIMIT 10;
+#+END_SRC
+
+#+RESULTS:
+| cid                                      | created_at                | files_touched | lines_added | lines_removed |   churn |   delta |
+|------------------------------------------+---------------------------+---------------+-------------+---------------+---------+---------|
+| 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2 | 2005-04-16 15:20:36-07:00 |         17291 |     6718755 |             0 | 6718755 | 6718755 |
+| b24413180f5600bcb3bb70fbed5cf186b60864bd | 2017-11-01 15:07:57+01:00 |         11139 |       11139 |             0 |   11139 |   11139 |
+| 5a0e3ad6af8660be21ca98a971cd00f331318c05 | 2010-03-24 17:04:11+09:00 |          4208 |        3717 |           717 |    4434 |    3000 |
+| 6ab3d5624e172c553004ecc862bfeac16d9d68b7 | 2006-06-30 19:25:36+02:00 |          2972 |           0 |          2976 |    2976 |   -2976 |
+| 25985edcedea6396277003854657b5f3cb31a628 | 2011-03-30 22:57:33-03:00 |          2463 |        4252 |          4252 |    8504 |       0 |
+| a09e64fbc0094e3073dbb09c3b4bfe4ab669244b | 2008-08-05 16:14:15+01:00 |          2230 |       52669 |         52688 |  105357 |     -19 |
+| 7c0f6ba682b9c7632072ffbedf8d328c8f3c42ba | 2016-12-24 11:46:01-08:00 |          1088 |        1088 |          1088 |    2176 |       0 |
+| 7d12e780e003f93433d49ce78cfedf4b4c52adc5 | 2006-10-05 14:55:46+01:00 |          1079 |        2621 |          2976 |    5597 |    -355 |
+| 6f52b16c5b29b89d92c0e7236f4655dc8491ad70 | 2017-11-01 15:08:43+01:00 |           930 |         930 |             0 |     930 |     930 |
+| a49d25364dfb9f8a64037488a39ab1f56c5fa419 | 2017-02-17 16:55:17+00:00 |           920 |      204645 |             0 |  204645 |  204645 |
+
+The largest commit contains all of the changes when Linux was imported into git. Linus didn't import the full history, so this commit is pretty big.
+
+The next largest commit adds license info to files that are missing it. The patch is created by Greg K-H and adds the GPL 2 license to a bunch of uapi files that are missing a license or have incorrectly formatted licenses. It's part of a multi-month project to ensure that the kernel is licensed consistently and that all of the files in the kernel are under the GPL 2 license.
+
+The third largest commit makes a bunch of 1-line changes, sometimes deleting, sometimes adding single lines. These changes are adding, removing, or simply changing the position of includes. The two includes that were worked on were `linux/slab.h` and `linux/gfp.h`. These are both related to memory. Slab is an allocation strategy, and gfp is about free pages.
+
+Overall, the number of files touched drops pretty quickly from being nearly 20,000 to 920 in the top ten commits.
+
+#+BEGIN_SRC sqlite :db ./linux.db
+SELECT commits.files_touched, count(*)
+FROM commits
+GROUP BY commits.files_touched
+ORDER BY commits.files_touched, count(*)
+LIMIT 15;
+#+END_SRC
+
+#+RESULTS:
+| files_touched | count(*) |
+|---------------+----------|
+|             0 |       39 |
+|             1 |   463629 |
+|             2 |   104924 |
+|             3 |    58589 |
+|             4 |    32650 |
+|             5 |    18923 |
+|             6 |    11515 |
+|             7 |     7548 |
+|             8 |     5196 |
+|             9 |     3595 |
+|            10 |     2750 |
+|            11 |     2051 |
+|            12 |     1705 |
+|            13 |     1339 |
+|            14 |     1062 |
+
+There are not very many commits that don't touch any files, which makes sense since they don't do very much.
+Empty commits are sometimes useful, they can trigger a new build in a CI system, or for testing git commit hooks/build system.
+To my knowledge, Linux doesn't use a CI system, so that can't be it, and the commits to the kernel repo usually pass through many layers of repositories before reaching the master branch, so empty commits should be filtered out.
+What's actually going on in some of these?
+
+#+BEGIN_SRC sqlite :db ./linux.db
+SELECT commits.cid, commits.created_at
+FROM commits
+WHERE commits.files_touched = 0;
+#+END_SRC
+
+| cid                                      | created_at                | Notes                                                               | Module            |
+|------------------------------------------+---------------------------+---------------------------------------------------------------------+-------------------|
+| c813d8e048740ca82b88a9d3f639bbd8095b24ac | 2015-08-20 14:54:15+10:00 | Appears normal                                                      | drm/nouveau/bin   |
+| 7aa86e5155a3c6b61c28bc37fdc4b7b25adae189 | 2014-04-08 12:47:03+01:00 | Appears normal: Link to a patch on Patchwork: 6724: 2 files touched | MIPS              |
+| 2c5f5c9a1d1b3559cbbda8e014706eb359566c00 | 2014-03-19 16:46:04-04:00 | Appears normal                                                      | selinux           |
+| be0306bcc3a0b0725b0f99b06d56a29a6d906b7c | 2013-07-23 01:39:33+10:00 | Merge                                                               |                   |
+| db27ac80792d3173a2c8a4458dcf7694db46108e | 2012-07-04 18:00:37+05:30 | Appears normal                                                      | arm/dts           |
+| f52c44cd27b4a0be37ef97f0466e4095ebebef3f | 2012-06-10 22:48:36+10:00 | Merge                                                               |                   |
+| 8865abd090f106edf2b199eff8df57872f29f30c | 2012-04-09 11:01:52+10:00 | Merge                                                               |                   |
+| 2eb6038c51034bf7f9335b15ce9238a028fdd2d6 | 2012-02-09 16:40:31+11:00 | Merge                                                               |                   |
+| a5e5c37434eb182cf50cec90d9736d9a9a390116 | 2011-11-22 15:55:30+00:00 | Appears normal                                                      | sctp              |
+| 94b12d4481b3f32004f13b52fb64d5cf75f551aa | 2011-08-08 13:39:40+10:00 | Merge                                                               |                   |
+| f55cf3c76a3b2e4bdcfea4f95c9d527663b41ece | 2011-06-09 10:24:49+10:00 | Merge                                                               |                   |
+| 7ee4b98eca42c1ff1df7dcf443dac07f0a2ea93d | 2011-03-17 17:32:35-07:00 | Appears normal                                                      | of/flattree       |
+| efb3bb4fad062f8e9b8c9c945d499597e14007e7 | 2011-03-30 08:50:41+11:00 | Merge                                                               |                   |
+| c206e5147717782bac25d3506fa9fa05890b0767 | 2011-02-24 14:36:03-08:00 | Appears normal                                                      | omap2+            |
+| 3939b20f90767655cbe5878b2ab663e64d690a88 | 2009-11-12 21:11:25+00:00 | Appears normal                                                      | RDMA/cxgb3        |
+| 050cc1f568e896a615110109999ed60ef75edf93 | 2009-03-31 03:36:39+00:00 | Appears normal                                                      | i.MX31            |
+| 4c6ed8f496fe89ff81b3d6e617a531bedfb613e4 | 2009-03-13 04:33:17+01:00 | Merge                                                               |                   |
+| d7f735d0bc68c411abda0a612e1421bdade649cc | 2008-12-17 10:21:03-05:00 | Appears normal                                                      | Btrfs             |
+| 43dd729b862f4a053310f75d3ee559b678772f59 | 2008-11-20 10:25:31-05:00 | Appears normal                                                      | Btrfs             |
+| d844222a54c33a960755b44b934cd1b01b05dceb | 2008-11-11 09:58:36+01:00 | Merge                                                               |                   |
+| 15c220d003f7914aab99cdb71cd7834a0c9b4557 | 2008-10-11 09:04:48+11:00 | Appears normal                                                      | Memory Management |
+| 4621d588e0e8b5b11cd913fe706e35915c1b83a3 | 2008-07-03 12:24:30+03:00 | Appears normal                                                      | ARM/OMAP          |
+| 3f662c6eaa941414636336f1b9147a73a60c792f | 2008-07-03 12:24:29+03:00 | Appears normal                                                      | ARM OMAP DMA      |
+| 249d621a85668b3b09296fbcfcf1cb5e9372a5ea | 2008-02-09 04:32:40-05:00 | Merge                                                               |                   |
+| b39f4ce974114ce8960d8bfa063c1f61e29d67cf | 2007-12-26 12:00:10+08:00 | Appears normal                                                      | Blackfin arch     |
+| e31b6656a81d6332cdf6af17d38a0573128a6aac | 2007-10-16 14:54:58+02:00 | Appears normal                                                      | ALSA              |
+| 3de3f774f98490dbac63b7b50a0d2eedfea86b5a | 2007-09-11 19:45:31-04:00 | Btrfs Tag v0.8                                                      |                   |
+| 6d626f65041e3f99d2ec78c8437dd2195210d6b2 | 2007-08-10 16:32:29-04:00 | Btrfs Tag v0.7                                                      |                   |
+| 37fa704640059d515cb2c7c6eaa5eb82901b95ac | 2007-08-07 16:35:25-04:00 | Btrfs Tag v0.6                                                      |                   |
+| f2fdf02406de9273ad27c3b73f70aee745173f7b | 2007-06-28 16:35:09-04:00 | Btrfs Tag v0.5                                                      |                   |
+| 4b2220da64727a1e31765ed4e17cd98f39749094 | 2007-06-22 14:50:30-04:00 | Btrfs Tag v0.4                                                      |                   |
+| 63c992fd0b733989d43e9762f48e300d61b5287e | 2007-06-18 10:32:44-04:00 | Btrfs Tag v0.3                                                      |                   |
+| b79ab950f57c3260ee609ba41779019d21b8eb88 | 2007-06-13 11:53:31-04:00 | Btrfs Tag v0.2                                                      |                   |
+| 67264484fac91db58fee9eb3bf1e3aaeaa3e7169 | 2006-02-07 04:01:19+01:00 | Appears normal                                                      | V4L/DVB (3325)    |
+| 69d37960b578be0a69383bd71d06c1fcfb86e8b9 | 2005-09-30 16:20:22-07:00 | Appears normal                                                      | IXP2000           |
+| 9ba91bd365a7f137c40b3644b57bc25853cd2d8d | 2005-06-21 15:12:20+10:00 | Appears normal                                                      | XFS               |
+| eaffe886b5b345eaf6586be78eef762b6fd3e2bd | 2005-06-21 14:47:46+10:00 | Appears normal                                                      | XFS               |
+| 2b7f4bd02699daef40388d84b08106550b0e10a3 | 2005-06-21 14:24:27+10:00 | Appears normal                                                      | XFS               |
+| ce1dc02f76432a46db149241e015a4f782974623 | 2005-04-17 13:30:46-07:00 | File modes                                                          |                   |
+
+I looked into each of the commits to see if there were any discernible pattern in the 0-file commits.
+The first one happens fairly early on in the history of the repository. It's a commit made by Linus that, according to the commit log message, fixes some file modes due to the 'git world order'. I'm not sure what this means, and (current) git doesn't show any changes as a result of this commit.
+10 of the 39 empty commits are actually merges that effectively function as a rebase. These merges are spread from 2008 until 2013.
+7 of the empty commits are tags for Btrfs versions. These spanned from July to September of 2007. These commits were made in fairly quick succession, usually with only a few days between them.
+
+There are many commits with the message indicating that a change was made, but for some reason there is no patch associated with it in the repository. In one case, there was a link to another page that did have an associated patch. I don't know where the associated patch for these commits went, but they appear to be errors.
+
+#+BEGIN_SRC sqlite :db linux.db
+.load './libs/libsqlitefunctions.so'
+SELECT count(*),	
+			 max(files_touched) max,
+			 median(files_touched) median,
+			 round(avg(files_touched), 3) avg,
+			 min(files_touched) min
+FROM commits
+WHERE files_touched <> 0;
+#+END_SRC
+
+#+RESULTS:
+| count(*) |   max | median |   avg | min |
+|----------+-------+--------+-------+-----|
+|   724851 | 17291 |      1 | 2.401 |   1 |
+
+Since there were only 39 0-file commits in the Linux repository, removing them from the pool and re-computing the median and average really has no impact. The median number of files modified per commit is 1, and the mean is 2.4 files.
+
+Now that we've taken a look at the 0-file commits, what is happening in the biggest commits?
+
+#+BEGIN_SRC sqlite :db ./linux.db
+.load './libs/libsqlitefunctions.so'
+
+SELECT cid, created_at, files_touched
+FROM commits
+ORDER BY files_touched DESC
+LIMIT 10;
+#+END_SRC
+
+#+RESULTS:
+| cid                                      | created_at                | files_touched | Notes                                     |
+|------------------------------------------+---------------------------+---------------+-------------------------------------------|
+| 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2 | 2005-04-16 15:20:36-07:00 |         17291 | Initial Commit, migrating all files       |
+| b24413180f5600bcb3bb70fbed5cf186b60864bd | 2017-11-01 15:07:57+01:00 |         11139 | License Cleanup                           |
+| 5a0e3ad6af8660be21ca98a971cd00f331318c05 | 2010-03-24 17:04:11+09:00 |          4208 | Cleaning up gpf.h and slab.h includes     |
+| 6ab3d5624e172c553004ecc862bfeac16d9d68b7 | 2006-06-30 19:25:36+02:00 |          2972 | Removing obsolete linux/config.h include  |
+| 25985edcedea6396277003854657b5f3cb31a628 | 2011-03-30 22:57:33-03:00 |          2463 | Running spell-check (codespell)           |
+| a09e64fbc0094e3073dbb09c3b4bfe4ab669244b | 2008-08-05 16:14:15+01:00 |          2230 | Moving a bunch of files                   |
+| 7c0f6ba682b9c7632072ffbedf8d328c8f3c42ba | 2016-12-24 11:46:01-08:00 |          1088 | Replace asm/uaccess.h to linux/uaccess.h  |
+| 7d12e780e003f93433d49ce78cfedf4b4c52adc5 | 2006-10-05 14:55:46+01:00 |          1079 | Changing how register pointers are stored |
+| 6f52b16c5b29b89d92c0e7236f4655dc8491ad70 | 2017-11-01 15:08:43+01:00 |           930 | License Cleanup                           |
+| a49d25364dfb9f8a64037488a39ab1f56c5fa419 | 2017-02-17 16:55:17+00:00 |           920 |                                           |
+
+The biggest is understandably the initial commit where everything is imported from  
+
+
+** LLVM
+
+#+BEGIN_SRC sqlite :db ./llvm.db
+.load './libs/libsqlitefunctions.so'
+
+SELECT commits.cid, commits.created_at, commits.files_touched, commits.lines_added, commits.lines_removed, commits.lines_added + commits.lines_removed churn, commits.lines_added - commits.lines_removed delta
+FROM commits
+ORDER BY commits.files_touched DESC
+LIMIT 10;
+#+END_SRC
+
+
+
+#+RESULTS:
+| cid                                      | created_at                | files_touched | lines_added | lines_removed |  churn | delta |
+|------------------------------------------+---------------------------+---------------+-------------+---------------+--------+-------|
+| 7c9c6ed761bf9d28c0c257a045b35781969136e0 | 2015-02-27 21:17:42+00:00 |          3931 |       29317 |         29293 |  58610 |    24 |
+| 198d8baafbfdfcf5a5e219602a5d94ed263973b4 | 2015-02-27 19:29:02+00:00 |          2277 |       41849 |         41819 |  83668 |    30 |
+| ca0df55065b11f2310f55c731b2f990d09ae1c32 | 2017-12-04 17:18:51+00:00 |          1435 |       50355 |         50304 | 100659 |    51 |
+| b1e1e82c54c060ea5dae09dae043234826ca2539 | 2009-09-08 16:50:01+00:00 |          1404 |        1514 |          1514 |   3028 |     0 |
+| f2f6ce65b79df6ec4ee427d51a18355a170f199b | 2009-09-11 18:01:28+00:00 |          1273 |        1366 |          1366 |   2732 |     0 |
+| 69ccadd7535a83b348595cf603126e6a68b2883b | 2006-12-02 04:23:10+00:00 |          1199 |        1682 |          1676 |   3358 |     6 |
+| fce288fc9134f0f1055caf0342c023225bd5c379 | 2009-09-09 00:09:15+00:00 |          1178 |        1654 |          1654 |   3308 |     0 |
+| 1076969bfeb582dc88a442ddab7dca2c4d187b47 | 2018-01-31 22:04:26+00:00 |           970 |       29359 |         29350 |  58709 |     9 |
+| 36a0947820fd4aa4b8a5fa26e3f079bdf572bc81 | 2009-09-08 23:54:48+00:00 |           968 |        1281 |          1256 |   2537 |    25 |
+| cf0db29df20d9c665da7e82bb261bdd7cf7f1b2b | 2015-06-19 15:57:42+00:00 |           940 |        1157 |          1157 |   2314 |     0 |
+
+Doing some manual inspection on these commits, it becomes apparent that the updates to the tests is an overwhelming proportion of the patch.
+
+| cid                                      | Description                                                                                 | Main Patch | Changed Tests |
+|------------------------------------------+---------------------------------------------------------------------------------------------+------------+---------------|
+| 7c9c6ed761bf9d28c0c257a045b35781969136e0 | Load instruction format change                                                              |          2 |          3929 |
+| 198d8baafbfdfcf5a5e219602a5d94ed263973b4 | GEP instruction format change                                                               |          2 |          2277 |
+| ca0df55065b11f2310f55c731b2f990d09ae1c32 | MBB format change, and change to debug formatting                                           |         80 |          1353 |
+| b1e1e82c54c060ea5dae09dae043234826ca2539 | Passing assembly directly to opt                                                            |          0 |          1404 |
+| f2f6ce65b79df6ec4ee427d51a18355a170f199b | Redirect asm files into opt instead of providing fname                                      |          0 |          1273 |
+| 69ccadd7535a83b348595cf603126e6a68b2883b | Run test files through llvm-upgrade before piping to llvm-as                                |          0 |          1199 |
+| fce288fc9134f0f1055caf0342c023225bd5c379 | Remove more llvm-as and llvm-dis                                                            |          0 |          1178 |
+| 1076969bfeb582dc88a442ddab7dca2c4d187b47 | Move MIR register names to use '$' instead of '%' -- There are four files under 'unittests' |          2 |           964 |
+| 36a0947820fd4aa4b8a5fa26e3f079bdf572bc81 | Dan Gohman removing more llvm-as and llvm-dis                                               |          0 |           968 |
+| cf0db29df20d9c665da7e82bb261bdd7cf7f1b2b | Use clang-tidy to fix namespace ending comment: end llvm namespace -> namespace llvm        |        940 |             0 |
+
+#+BEGIN_SRC sqlite :db ./llvm.db
+.load './libs/libsqlitefunctions.so'
+
+SELECT cid, count(*) files_touched
+FROM files
+WHERE filename NOT LIKE '%test%'
+GROUP BY cid
+ORDER BY files_touched DESC
+LIMIT 10;
+#+END_SRC
+
+| cid                                      | files_touched |
+|------------------------------------------+---------------|
+| cf0db29df20d9c665da7e82bb261bdd7cf7f1b2b |           938 |
+| cd52a7a381a73c53ec4ef517ad87f19808cb1a28 |           937 |
+| 26b584c691811dc9c3569391bd24cdd0d2ce3c44 |           774 |
+| e3e43d9d574cf0a829e9a58525372ba0868a3292 |           714 |
+| d04a8d4b33ff316ca4cf961e06c9e312eff8e64f |           590 |
+| 0b8c9a80f20772c3793201ab5b251d3520b9cea3 |           576 |
+| d0fde30ce850b78371fd1386338350591f9ff494 |           555 |
+| 4ee451de366474b9c228b4e5fa573795a715216d |           548 |
+| 0818e789cb58fbf6b5e225a3f1c722294881c445 |           498 |
+| 00e08fcaa02286dd7da9cf9a8d158545532ab832 |           475 |
+
+| cid                                      | Notes                                |
+|------------------------------------------+--------------------------------------|
+| cf0db29df20d9c665da7e82bb261bdd7cf7f1b2b | Clang tidy to fix namespace          |
+| cd52a7a381a73c53ec4ef517ad87f19808cb1a28 | Reverts cf0db29df                    |
+| 26b584c691811dc9c3569391bd24cdd0d2ce3c44 | Remove \brief from doxygen comment   |
+| e3e43d9d574cf0a829e9a58525372ba0868a3292 | Sorting/Fixing includes              |
+| d04a8d4b33ff316ca4cf961e06c9e312eff8e64f | Sorting/Fixing includes              |
+| 0b8c9a80f20772c3793201ab5b251d3520b9cea3 | Moving IR headers to include/llvm/IR |
+| d0fde30ce850b78371fd1386338350591f9ff494 | Put LLVM code into LLVM namespace    |
+| 4ee451de366474b9c228b4e5fa573795a715216d | Remove attribution from file header  |
+| 0818e789cb58fbf6b5e225a3f1c722294881c445 | Rename DEBUG macro to LLVM_DEBUG     |
+| 00e08fcaa02286dd7da9cf9a8d158545532ab832 | Canonicalize header guards           |
+
+#+BEGIN_SRC sqlite :db ./llvm.db
+SELECT * FROM files WHERE cid = '000f65d1b143267a89e68cf4fa32face02b1edaf';
+#+END_SRC   
+
+#+RESULTS:
+| cid                                      | filename                                   | added | removed |
+|------------------------------------------+--------------------------------------------+-------+---------|
+| 000f65d1b143267a89e68cf4fa32face02b1edaf | lib/Target/X86/X86ISelLowering.cpp         |    63 |       0 |
+| 000f65d1b143267a89e68cf4fa32face02b1edaf | test/CodeGen/X86/vector-shuffle-512-v16.ll |     6 |       8 |
+| 000f65d1b143267a89e68cf4fa32face02b1edaf | test/CodeGen/X86/vector-shuffle-masked.ll  |    12 |      16 |
+
+The "main patch" are the number of files changed that are in the 'include' or 'lib' directories, while the number of changed tests are the number of files modified under the 'tests' directory.
+There were some files in other directories, such as docs, that are not counted in these numbers.
+Overall, the changes to the tests overwhelm the actual patch. The last commit is kind of an outlier in this though, where it makes a non-functional change to a lot of files.
+
+#+BEGIN_SRC sqlite :db ./llvm.db
+SELECT count(*)
+FROM commits
+WHERE commits.files_touched = 0;
+#+END_SRC
+
+#+RESULTS:
+| count(*) |
+|----------|
+|      211 |
+
+There are quite a few commits in LLVM that do not touch any files. A few more than I actually want to manually inspect so I'll look at the most recent 10.
+
+#+BEGIN_SRC sqlite :db ./llvm.db
+SELECT commits.cid, commits.created_at
+FROM commits
+WHERE commits.files_touched = 0
+ORDER BY commits.created_at DESC
+LIMIT 10;
+#+END_SRC
+
+#+RESULTS:
+| cid                                      | created_at                | Notes                                                 |
+|------------------------------------------+---------------------------+-------------------------------------------------------|
+| a02557d1b8ea2732d1d8f1b9a706b17b90a3819c | 2018-08-03 15:09:56+00:00 | Fix Line ending                                       |
+| 0ad50ac3b85deeb12b2836cd638dcee785b88707 | 2018-07-15 23:52:15+00:00 | prune empty directory                                 |
+| e7de33fcf27abac4da5f553336bd120c06d640eb | 2018-06-28 17:52:06+00:00 | Change the line-ending to CRLF on a windows-only file |
+| 3a09592b608b074810cfec1d4df538653511a416 | 2018-06-27 09:23:38+00:00 | Remove empty codegen dir in root                      |
+| a518a5e97ec05be53fa53734c3ae3807006b82fe | 2018-06-05 11:38:11+00:00 | Change EOL property                                   |
+| 094f3838fe2d215d9f8a2ff15786527a51b7ae95 | 2017-11-02 08:02:03+00:00 | Remove empty directory                                |
+| ae83487a4968d47d8f951c9502f430c938a21f8b | 2017-09-19 00:13:42+00:00 | Set SVN to ignore pyc files                           |
+| f1e3a3638c14a995ceb43a58bac068f5b5c78a97 | 2017-04-19 15:43:23+00:00 | Remove eol style from MathExtras.h                    |
+| 12e38cb73b45f27d19c4dd82087f6887f328b7b6 | 2017-04-12 19:52:47+00:00 | Remove eol style from Casting.h                       |
+| df685624d01263f0a89163656d70fa58b9c73bd5 | 2017-04-10 20:16:54+00:00 | Remove eol style from "some files"                    |
+
+Now interestingly, the link to the corresponding SVN commit is broken, resulting in the server responding with a 404.
+The main LLVM repository runs on SVN, so the git repo must mirror no-effect changes as well. I'm not very familiar with SVN so I won't make extra claims here, but I know that git doesn't track empty directories, so commits that remove directories will be completely empty.
+
+#+BEGIN_SRC sqlite :db llvm.db
+.load './libs/libsqlitefunctions.so'
+SELECT count(*),
+			 max(files_touched) max,
+			 median(files_touched) median,
+			 round(avg(files_touched), 3) avg,
+			 min(files_touched) min
+FROM commits
+WHERE files_touched <> 0;
+#+END_SRC
+
+#+RESULTS:
+| count(*) |  max | median |   avg | min |
+|----------+------+--------+-------+-----|
+|   170071 | 3931 |      1 | 3.382 |   1 |
+
+While there are more 0-file commits in the LLVM repository than in the Linux repository, removing these still has no impact on the median. The median number of files changed per commit is 1. The mean increases slightly, from 3.377 up to 3.382 files.
+
+** Comparison and Conclusion
+
+Both projects have some commits that make changes to a lot of files. LLVM has a higher overall files modified per commit than Linux, but those effects are seen in the upper two quartiles. Most of the commits in both projects only touch a single file. The commit that touches the most files in Linux touches far more files than the commit that touches the most files in LLVM.
+
+It seems to be more common to modify many files in LLVM than in Linux. In LLVM, changes can sometimes effect the entire test suite. Linux doesn't actually have a test suite in the main repository. There seem to be a few "unofficial" test suites maintained by various companies. The [[https://github.com/linux-test-project/ltp][Linux Test Project]] for example, seems to be fairly active. Linux doesn't have the churn of the test suite showing up in the commits. This could be a confounding variable to the results. If Linux did have a builtin test suite, would the developers fix the test-suite in one commit, or would they make the changes in a separate commit? Since they don't, I can't really answer that without maybe emailing Linus or some members of the Linux foundation. The results would be more comparable if we ignored the changes made to files in the test suite.
+
+Looking at the commits that touched the most files in LLVM, the biggest contributor to the file count came from the test suite. In five out of the top ten cases, there were only changes made to the test suite. In only one case were there more changes to the actual source than to the test suite, and this commit only made changes to the comment at the end of the namespaces. I may take a stab at looking into what happens if we ignore the test suite, but it kind of looks like there will be fewer files touched per commit in LLVM than in Linux. As of right now, this investigation is inconclusive at this time.
+
+
+#+BEGIN_SRC R
+library(RSQLite)
+
+linux_con <- dbConnect(drv=dbDriver('SQLite'), dbname='./linux.db')
+llvm_con <- dbConnect(drv=dbDriver('SQLite'), dbname='./llvm.db')
+
+colorSchemeFill = c("#6ca1f7", "#f74747")
+colorSchemeBorder= c("#3364b2", "#b23333")
+
+query <- "
+SELECT cid, count(*) files_touched
+FROM files
+WHERE filename NOT LIKE '%test%'
+GROUP BY cid;
+"
+
+linux_data <- dbGetQuery(linux_con, query)
+llvm_data <- dbGetQuery(llvm_con, query)
+
+dbDisconnect(linux_con)
+dbDisconnect(llvm_con)
+
+svg("images/file_no_tests_distribution.svg")
+
+boxplot(linux_data$files_touched, llvm_data$files_touched,
+        col=colorSchemeFill,
+        names=list('Linux', 'LLVM'),
+        main="Distribution of Non-test Files Touched Per Commit",
+        outline=F)
+#+END_SRC
+
+#+BEGIN_SRC R
+library(RSQLite)
+
+linux_con <- dbConnect(drv=dbDriver('SQLite'), dbname='./linux.db')
+llvm_con <- dbConnect(drv=dbDriver('SQLite'), dbname='./llvm.db')
+
+query <- "
+SELECT cid, count(*) files_touched
+FROM files
+WHERE filename NOT LIKE '%test%'
+GROUP BY cid;
+"
+
+linux_data <- dbGetQuery(linux_con, query)
+llvm_data <- dbGetQuery(llvm_con, query)
+
+dbDisconnect(linux_con)
+dbDisconnect(llvm_con)
+
+
+
+#+END_SRC
+
+#+RESULTS:
+| 669.768205030831 |
+| 67.6383565331316 |
+
+
+
+* Effect of Merging on Patch Size 
+
+As we saw in the previous section, commits in LLVM touch more files than commits in Linux. Further investigation showed that this is likely related to the existence of a test-suite in LLVM where a corresponding test file must be updated along with changes made to the main source. This should have a similar impact on the code churn, since for every change to the source code, the tests will also incur code churn.
+
+#+NAME: Code Churn Over Time
+[[./plots/churn_over_time.pdf]]
+
+Looking at how code churn changes over time, Linux sees a drop in the churn, while LLVM sees what almost looks parabolic. In both, the initial churn is relatively high. In Linux, the churn drops, and continues to drop until today. In LLVM, the churn per commit initially recedes, but in 2006, starts to increase again.
+
+#+BEGIN_SRC sqlite :db ./linux.db
+.load './libs/libsqlitefunctions.so'
+attach 'llvm.db' AS llvm;
+attach 'linux.db' AS linux;
+
+SELECT 'Linux' project,
+			 count(*),
+			 max(lines_added + lines_removed) max,
+			 median(lines_added + lines_removed) median,
+			 round(avg(lines_added + lines_removed), 3) mean,
+			 min(lines_added + lines_removed) min
+FROM linux.commits
+UNION
+SELECT 'LLVM' project,
+			 count(*),
+			 max(lines_added + lines_removed) max,
+			 median(lines_added + lines_removed) median,
+			 round(avg(lines_added + lines_removed), 3) mean,
+			 min(lines_added + lines_removed) min
+FROM llvm.commits;
+
+#+END_SRC
+
+#+RESULTS:
+| project | count(*) |     max | median |    mean | min |
+|---------+----------+---------+--------+---------+-----|
+| LLVM    |   170283 |  421292 |     24 | 158.391 |   0 |
+| Linux   |   724890 | 6718755 |     14 | 102.318 |   0 |
+
+Linux has a commit that churns far more than the most churn-y commit in LLVM. Both have commits that don't have any churn, probably from those 0-file commits we saw earlier. In the median and mean, LLVM has more churn per commit than Linux.
+
+Given what we already know about the repository, I don't know that it's worth digging into this effect too much, other than just being aware that the churn per commit is higher in LLVM than in Linux.
+
+* Round 2
+
+Okay, so we don't have conclusive evidence that the merging pattern in LLVM and Linux has an impact on the number of files touched per commit, or the code churn per commit.
+While we do see that, especially in the later years, LLVM has more files touched per commit and more lines churned than Linux, this could easily be confounded by the fact that LLVM also has a test suite that must be maintained with each change.
+
+In order to determine whether the effects are from the presence of a maintained test suite or from the merge strategy we need to look at the changes at a file-level.
+The database is extended with an additional table containing information about the changes to each file. This way, we can ignore the changes made to tests in LLVM, giving us something a bit more comparable.
+
+The files table has the following schema:
+
+| Files       |                 |                                                      |
+|-------------+-----------------+------------------------------------------------------|
+| cid         | CHARACTER (40)  | Commit hash                                          |
+| filename    | TEXT            | Name of the file                                     |
+| added       | INTEGER         | Number of lines added to the file in this commit     |
+| removed     | INTEGER         | Number of lines removed from the file in this commit |
+|             |                 |                                                      |
+| PRIMARY KEY | (cid, filename) |                                                      |
+|             |                 |                                                      |
+
+Now lets get back to exploring the data.
+
+What's left of the commits after we remove the files that have test in them?
+
+#+BEGIN_SRC sqlite :db ./linux.db
+.load './libs/libsqlitefunctions.so'
+attach 'llvm.db' as llvm;
+attach 'linux.db' as linux;
+
+-- All of the files that are not involved with a 'test'. Maybe a bit liberal, but should do the job
+CREATE TEMPORARY TABLE linux_commits AS SELECT * FROM linux.files WHERE filename NOT LIKE '%test%';
+CREATE TEMPORARY TABLE llvm_commits AS SELECT * FROM llvm.files WHERE filename NOT LIKE '%test%';
+
+SELECT 'Linux' project, count(DISTINCT cid) FROM linux_commits
+UNION
+SELECT 'LLVM' project, count(DISTINCT cid) FROM llvm_commits;
+#+END_SRC
+
+#+RESULTS:
+| project | count(DISTINCT cid) |
+|---------+---------------------|
+| LLVM    |              150477 |
+| Linux   |              720383 |
+
+LLVM loses about 20,000 commits that are only containing files with "test" in them.
+Linux loses only around 4,000 commits. I'm a little curious what files were in Linux that were removed since I didn't see a directory for tests.
+
+#+BEGIN_SRC sqlite :db ./linux.db
+SELECT * FROM files WHERE filename LIKE '%test%' LIMIT 10;
+#+END_SRC
+
+#+RESULTS:
+| cid                                      | filename                                                        | added | removed |
+|------------------------------------------+-----------------------------------------------------------------+-------+---------|
+| 0b405c65ad459f5f4d3db1672246172bd19d946d | kernel/locking/test-ww_mutex.c                                  |     1 |       1 |
+| c81c7012e0c769b5704c2b07bd5224965e76fb70 | tools/testing/selftests/net/pmtu.sh                             |     4 |       1 |
+| 902b5417f28d955cdb4898df6ffaab15f56c5cff | tools/testing/selftests/net/pmtu.sh                             |     1 |       1 |
+| 9b3579fc6c6ac45502de1fa9a1fdf873805c2157 | tools/perf/arch/x86/include/arch-tests.h                        |     1 |       0 |
+| 9b3579fc6c6ac45502de1fa9a1fdf873805c2157 | tools/perf/arch/x86/tests/Build                                 |     1 |       0 |
+| 9b3579fc6c6ac45502de1fa9a1fdf873805c2157 | tools/perf/arch/x86/tests/arch-tests.c                          |     6 |       0 |
+| 9b3579fc6c6ac45502de1fa9a1fdf873805c2157 | tools/perf/arch/x86/tests/bp-modify.c                           |   213 |       0 |
+| 25a8238f4cc8425d4aade4f9041be468d0e8aa2e | tools/testing/selftests/tc-testing/tc-tests/actions/police.json |    48 |       0 |
+| 973e5405f2f67ddbb2bf07b3ffc71908a37fea8e | Documentation/ABI/testing/sysfs-driver-xen-blkback              |    10 |       0 |
+| de9df3993cfffde468c1c226382f24cec7e9fedc | lib/test_hexdump.c                                              |    23 |       5 |
+
+Yes, those appear to be tests. So, I was wrong, but the tests are actually kept in with the source files. Neat! Learned something.
+I still suspect that there will be fewer "change-the-world" commits that have an impact on all of the tests in Linux than in LLVM.
+
+** Files Touched
+
+#+BEGIN_SRC sqlite :db ./linux.db
+.load './libs/libsqlitefunctions.so'
+attach 'llvm.db' as llvm;
+attach 'linux.db' as linux;
+
+-- All of the files that are not involved with a 'test'. Maybe a bit liberal, but should do the job
+CREATE TEMPORARY TABLE linux_commits AS SELECT * FROM linux.files WHERE filename NOT LIKE '%test%';
+CREATE TEMPORARY TABLE llvm_commits AS SELECT * FROM llvm.files WHERE filename NOT LIKE '%test%';
+
+SELECT project, count(*), max(files_touched) max, median(files_touched) median, round(avg(files_touched), 3) avg, min(files_touched) min
+FROM
+(SELECT 'Linux' project, cid, count(*) files_touched FROM linux_commits GROUP BY cid
+UNION
+SELECT 'LLVM' project, cid, count(*) files_touched FROM llvm_commits GROUP BY cid) A
+GROUP BY project;
+#+END_SRC
+
+#+RESULTS:
+| project | count(*) |   max | median |   avg | min |
+|---------+----------+-------+--------+-------+-----|
+| LLVM    |   150477 |   938 |      1 | 2.516 |   1 |
+| Linux   |   720383 | 17271 |      1 | 2.397 |   1 |
+
+LLVM shows a considerable drop in the average number of files touched per commit, but it is still greater than the average number of files touched in Linux. The median shows no difference, and since we're focusing only on commits with files, the minimum in both cases is 1. We won't see any 0-file commits in the files table.
+
+Just for fun, lets take a look at how the ratio of test files and non-test files changes over time.
+
+#+BEGIN_SRC sqlite :db ./linux.db
+SELECT valYear, avg(source_percent), avg(test_percent)
+FROM
+(SELECT commits.cid, cast(strftime('%Y', commits.created_at) AS INTEGER) valYear, 100. * no_test.files_touched / commits.files_touched source_percent, 100. * with_test.files_touched / commits.files_touched test_percent
+FROM commits
+JOIN (SELECT cid, count(*) files_touched FROM files WHERE filename NOT LIKE '%test%' GROUP BY cid) AS no_test
+ON commits.cid = no_test.cid
+JOIN (SELECT cid, count(*) files_touched FROM files WHERE filename LIKE '%test%' GROUP BY cid) AS with_test
+ON commits.cid = with_test.cid)
+GROUP BY valYear;
+#+END_SRC
+
+#+RESULTS:
+| valYear | avg(source_percent) | avg(test_percent) |
+|---------+---------------------+-------------------|
+|    2005 |    88.8225447307102 |  11.1774552692898 |
+|    2006 |    79.8859565230637 |  20.1140434769363 |
+|    2007 |    78.6529177565056 |  21.3470822434944 |
+|    2008 |    72.5207368652166 |  27.4792631347834 |
+|    2009 |    75.2142161091175 |  24.7857838908825 |
+|    2010 |    77.3518263411361 |  22.6481736588639 |
+|    2011 |    74.0952426768331 |  25.9047573231669 |
+|    2012 |      70.78583742665 |  29.2141625733501 |
+|    2013 |    71.6641999682765 |  28.3358000317235 |
+|    2014 |    69.0805708216524 |  30.9194291783475 |
+|    2015 |    65.8481415104378 |  34.1518584895622 |
+|    2016 |    66.7897596335928 |  33.2102403664073 |
+|    2017 |    66.8169127355091 |   33.183087264491 |
+|    2018 |    65.9403548243479 |  34.0596451756521 |
+
+#+BEGIN_SRC sqlite :db ./llvm.db
+SELECT valYear, avg(source_percent), avg(test_percent)
+FROM
+(SELECT commits.cid, cast(strftime('%Y', commits.created_at) AS INTEGER) valYear, 100. * no_test.files_touched / commits.files_touched source_percent, 100. * with_test.files_touched / commits.files_touched test_percent
+FROM commits
+JOIN (SELECT cid, count(*) files_touched FROM files WHERE filename NOT LIKE '%test%' GROUP BY cid) AS no_test
+ON commits.cid = no_test.cid
+JOIN (SELECT cid, count(*) files_touched FROM files WHERE filename LIKE '%test%' GROUP BY cid) AS with_test
+ON commits.cid = with_test.cid)
+GROUP BY valYear;
+#+END_SRC
+
+#+RESULTS:
+| valYear | avg(source_percent) | avg(test_percent) |
+|---------+---------------------+-------------------|
+|    2001 |    92.5915890681949 |  7.40841093180512 |
+|    2002 |    83.6315473047544 |  16.3684526952456 |
+|    2003 |    87.1409361600485 |  12.8590638399515 |
+|    2004 |    74.0049093638903 |  25.9950906361097 |
+|    2005 |    66.7501526251526 |  33.2498473748474 |
+|    2006 |     58.453299477716 |   41.546700522284 |
+|    2007 |    57.6970201906857 |  42.3029798093143 |
+|    2008 |    54.4722404077241 |  45.5277595922759 |
+|    2009 |     55.471878826142 |   44.528121173858 |
+|    2010 |    54.9300565038373 |  45.0699434961628 |
+|    2011 |    54.5792370465182 |  45.4207629534819 |
+|    2012 |    54.1563186646664 |  45.8436813353336 |
+|    2013 |    54.4006206759091 |  45.5993793240908 |
+|    2014 |    53.0710425036167 |  46.9289574963833 |
+|    2015 |    52.4219877850283 |  47.5780122149717 |
+|    2016 |    52.3359519358587 |  47.6640480641411 |
+|    2017 |    50.5432352847592 |  49.4567647152408 |
+|    2018 |    49.9623629695437 |  50.0376370304563 |
+
+This is actually pretty cool. In both projects, the percent of the average commit that touches test files has been increasing in both projects.
+
+[[plots/test_ratio_file_distribution_over_time.pdf]]
+
+By ignoring the tests and just looking at the source, we're effectively getting rid of half of the data from LLVM in the later years.
+
+
+** Code Churn
+
+#+BEGIN_SRC sqlite :db ./linux.db
+.load './libs/libsqlitefunctions.so'
+attach 'llvm.db' as llvm;
+attach 'linux.db' as linux;
+
+CREATE TEMPORARY TABLE linux_commits AS SELECT * FROM linux.files WHERE filename NOT LIKE '%test%';
+CREATE TEMPORARY TABLE llvm_commits AS SELECT * FROM llvm.files WHERE filename NOT LIKE '%test%';
+
+SELECT project Project, count(*) Commits, max(churn) max, median(churn) median, round(avg(churn), 3) avg, min(churn) min
+FROM
+(SELECT 'Linux' project, cid, sum(added) + sum(removed) churn FROM linux_commits GROUP BY cid
+UNION
+SELECT 'LLVM' project, cid, sum(added) + sum(removed) churn FROM llvm_commits GROUP BY cid) A
+GROUP BY project;
+#+END_SRC
+
+#+RESULTS:
+| Project | Commits |     max | median |     avg | min |
+|---------+---------+---------+--------+---------+-----|
+| LLVM    |  150477 |   64919 |     17 |  96.572 |   0 |
+| Linux   |  720383 | 6706071 |     14 | 102.089 |   0 |
+
+So looking back at the code churn, things are a little different. The minimal churn in both repositories is 0 lines, which is kin of confusing since that would mean that the file wasn't actually modified. LLVM has more source (non-test) lines churned in the median-size commit with 17 lines of churn, but Linux has a higher mean churn. The mean is a lot bigger than the median, which indicates that there are some outliers on the upper end. That is pretty evident by the max, which are huge commits.
+
+Okay, first question, why are there 0-churn commits still?
+
+#+BEGIN_SRC sqlite :db ./linux.db
+SELECT churn, count(*)
+FROM
+(SELECT cid, sum(added) + sum(removed) churn
+FROM
+(SELECT * FROM files WHERE filename NOT LIKE '%test%') non_test_commits
+GROUP BY cid)
+GROUP BY churn
+LIMIT 10;
+#+END_SRC
+
+#+RESULTS:
+| churn | count(*) |
+|-------+----------|
+|     0 |      307 |
+|     1 |    30300 |
+|     2 |    82886 |
+|     3 |    29503 |
+|     4 |    46146 |
+|     5 |    21219 |
+|     6 |    30171 |
+|     7 |    17750 |
+|     8 |    23801 |
+|     9 |    15185 |
+
+#+BEGIN_SRC sqlite :db ./llvm.db
+SELECT churn, count(*)
+FROM
+(SELECT cid, sum(added) + sum(removed) churn
+FROM
+(SELECT * FROM files WHERE filename NOT LIKE '%test%') non_test_commits
+GROUP BY cid)
+GROUP BY churn
+LIMIT 10;
+#+END_SRC
+
+#+RESULTS:
+| churn | count(*) |
+|-------+----------|
+|     0 |       67 |
+|     1 |     4374 |
+|     2 |    15014 |
+|     3 |     5708 |
+|     4 |     9226 |
+|     5 |     4518 |
+|     6 |     6127 |
+|     7 |     3403 |
+|     8 |     4781 |
+|     9 |     3055 |
+
+#+BEGIN_SRC sqlite :db ./linux.db
+SELECT cid, sum(added) + sum(removed) churn
+FROM
+(SELECT * FROM files WHERE filename NOT LIKE '%test%') non_test_commits
+GROUP BY cid
+HAVING sum(added) + sum(removed) = 0
+LIMIT 10;
+#+END_SRC
+
+#+RESULTS:
+| cid                                      | churn | Note                                   |
+|------------------------------------------+-------+----------------------------------------|
+| 019f5f18eec1ac54215df69cafb8c7b770f75f19 |     0 | File Renamed                           |
+| 02048817a70ad04dda5b30ad876c42a232229c99 |     0 | Removal of a 0-length file             |
+| 024b246ed24492d6c2ee14c34d742b137fce1b94 |     0 | A bunch of renames                     |
+| 045868df2c5eee2330c052f8237b428afa9394fd |     0 | File Rename                            |
+| 06ed5c2bfacaf67039e87a213fa5d1cdde34246a |     0 | Set executable bit on scripts          |
+| 078ef067bca6725ab71c0c8d58112ae66097062f |     0 | Not sure, but correct according to git |
+| 0883c2c06fb5bcf5b9e008270827e63c09a88c1e |     0 | File Rename                            |
+| 08ccd883f536d81d380522106c67bd5d7043fa4a |     0 | Moved file                             |
+| 08cd94ec522b68647110374a9bd13f94e693aa11 |     0 | Move file                              |
+| 0ac4aeb5185fda7c9dd42964ce3d9c368bb81d41 |     0 | Fixed File Permissions                 |
+
+
+#+BEGIN_SRC sqlite :db ./linux.db
+attach './linux.db' as linux;
+attach './llvm.db' as llvm;
+
+SELECT  linux_churn.churn Churn,
+				linux_churn.commits 'Linux Commits',
+				llvm_churn.commits 'LLVM Commits'
+FROM
+( SELECT churn, 
+				 count(*) commits
+	FROM
+	( SELECT cid, 
+					 sum(added) + sum(removed) churn
+		FROM (SELECT * FROM linux.files WHERE filename NOT LIKE '%test%')
+		GROUP BY cid)
+	GROUP BY churn) linux_churn
+JOIN 
+( SELECT churn, 
+				 count(*) commits
+	FROM
+	( SELECT cid, 
+					 sum(added) + sum(removed) churn
+		FROM (SELECT * FROM llvm.files WHERE filename NOT LIKE '%test%')
+		GROUP BY cid)
+  GROUP BY churn) llvm_churn
+ON linux_churn.churn = llvm_churn.churn
+LIMIT 10;
+#+END_SRC
+
+#+RESULTS:
+| Churn | Linux Commits | LLVM Commits |
+|-------+---------------+--------------|
+|     0 |           307 |           67 |
+|     1 |         30300 |         4374 |
+|     2 |         82886 |        15014 |
+|     3 |         29503 |         5708 |
+|     4 |         46146 |         9226 |
+|     5 |         21219 |         4518 |
+|     6 |         30171 |         6127 |
+|     7 |         17750 |         3403 |
+|     8 |         23801 |         4781 |
+|     9 |         15185 |         3055 |
+
+0-length changes seem to be caused when the file gets renamed or when permissions are changed. I think they may also be caused by changes made to a binary file as well, which makes sense too.
+This is good, it means that things still make sense and that it is possible ot have files that are changed without actually changing the file.
+
+#+BEGIN_SRC R :results output
+library(RSQLite)
+
+linux_con <- dbConnect(drv=dbDriver('SQLite'), dbname='./linux.db')
+llvm_con <- dbConnect(drv=dbDriver('SQLite'), dbname='./llvm.db')
+
+query <- "
+
+SELECT cid, sum(added) + sum(removed) churn
+FROM files
+WHERE filename NOT LIKE '%test%'
+GROUP BY cid;
+"
+
+linux_data <- dbGetQuery(linux_con, query)
+llvm_data <- dbGetQuery(llvm_con, query)
+
+dbDisconnect(linux_con)
+dbDisconnect(llvm_con)
+
+print(paste0(c(sum(linux_data$churn), min(linux_data$churn), max(linux_data$churn), var(linux_data$churn))))
+print(paste0(c(sum(llvm_data$churn), min(llvm_data$churn), max(llvm_data$churn), var(llvm_data$churn))))
+
+t.test(linux_data$churn, llvm_data$churn)
+wilcox.test(linux_data$churn, llvm_data$churn, paried=FALSE, alternative='less')
+#+END_SRC
+
+#+RESULTS:
+#+begin_example
+[1] "73543510"         "0"                "6706071"          "63732497.7818727"
+[1] "14531866"         "0"                "64919"            "518769.706976599"
+
+	Welch Two Sample t-test
+
+data:  linux_data$churn and llvm_data$churn
+t = 0.57549, df = 772010, p-value = 0.565
+alternative hypothesis: true difference in means is not equal to 0
+95 percent confidence interval:
+ -13.27349  24.30839
+sample estimates:
+mean of x mean of y 
+102.08946  96.57201 
+
+
+	Wilcoxon rank sum test with continuity correction
+
+data:  linux_data$churn and llvm_data$churn
+W = 5.0837e+10, p-value < 2.2e-16
+alternative hypothesis: true location shift is less than 0
+
+#+end_example
+
